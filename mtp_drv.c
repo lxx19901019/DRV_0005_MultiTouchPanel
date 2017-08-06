@@ -176,6 +176,8 @@ static int __devinit mtp_probe(struct i2c_client *client,
 	set_bit(ABS_MT_TRACKING_ID, mtp_dev->absbit);
 	set_bit(ABS_MT_POSITION_X, mtp_dev->absbit);
 	set_bit(ABS_MT_POSITION_Y, mtp_dev->absbit);
+
+	set_bit(INPUT_PROP_DIRECT, mtp_dev->propbit);
 	/* 2.3 这些事件的范围 */
 	/*电容屏的最大ID值与"N点触摸"无关, 由触摸IC决定*/
 	input_set_abs_params(mtp_dev, ABS_MT_TRACKING_ID, 0, MTP_MAX_ID,0 ,0);
@@ -207,6 +209,7 @@ static int __devexit mtp_remove(struct i2c_client *client)
 
 static const struct i2c_device_id mtp_id_table[] = {
 	{ "100ask_mtp", 0 },
+	{ "ft5x0x_ts", 0 },
 	{}
 };
 
