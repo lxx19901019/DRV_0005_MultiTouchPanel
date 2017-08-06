@@ -3,23 +3,40 @@
 #include <linux/platform_device.h>
 #include <linux/i2c.h>
 #include <linux/err.h>
-#include <linux/regmap.h>
 #include <linux/slab.h>
+#include <linux/interrupt.h>
+#include <linux/input.h>
+#include <linux/irq.h>
+#include <asm/mach/irq.h>
+#include <linux/gpio.h>
+#include <linux/platform_device.h>
 
-#define MTP_ADDR 0x70
 
-#define  MTP_MAX_ID  1000 /*由硬件决定*/
+#include <mach/gpio.h>
+#include <plat/gpio-cfg.h>
+
+
+#define MTP_ADDR (0x70>>1)
+
+#define  MTP_MAX_ID  15 /*由硬件决定*/
 #define  MTP_MAX_X   800
 #define  MTP_MAX_Y   480
 
-#define  MTP_IRQ  123
+#define  MTP_IRQ  gpio_to_irq(EXYNOS4_GPX1(6))
 
-#define  MTP_NAME "XXXX"
+#define  MTP_NAME "ft5x0x_ts"
 
 struct input_dev *mtp_dev;
 struct work_struct mtp_work;
+struct mtp_event {
+	int x;
+	int y;
+	int id;
+};
+static struct mtp_event mtp_events[16];
+static int mtp_points ;
 
-irqreturn_t mtp_interrupt(int, void *)
+irqreturn_t mtp_interrupt(int irq, void *arg)
 {
 
 	/* 本该获取触点数据，并上报
@@ -33,26 +50,105 @@ irqreturn_t mtp_interrupt(int, void *)
 	
 	return IRQ_HANDLED;
 }
+
+static struct i2c_client *this_client;
+
+static int mtp_i2c_rxdata(struct i2c_client *this_client, char *rxdata, int length) {
+	int ret;
+	struct i2c_msg msgs[] = {
+		{
+			.addr	= this_client->addr,
+			.flags	= 0,
+			.len	= 1,
+			.buf	= rxdata,
+		},
+		{
+			.addr	= this_client->addr,
+			.flags	= I2C_M_RD,
+			.len	= length,
+			.buf	= rxdata,
+		},
+	};
+
+	ret = i2c_transfer(this_client->adapter, msgs, 2);
+	if (ret < 0)
+		pr_err("%s: i2c read error: %d\n", __func__, ret);
+
+	return ret;
+}
+
+static int mtp_read_data(void) {
+	u8 buf[32] = { 0 };
+	int ret;
+
+	ret = mtp_i2c_rxdata(this_client, buf, 31);
+
+	if (ret < 0) {
+		printk("%s: read touch data failed, %d\n", __func__, ret);
+		return ret;
+	}
+
+
+	mtp_points = buf[2] & 0x0f;
+
+
+
+	switch (mtp_points) {
+		case 5:
+			mtp_events[4].x = (s16)(buf[0x1b] & 0x0F)<<8 | (s16)buf[0x1c];
+			mtp_events[4].y = (s16)(buf[0x1d] & 0x0F)<<8 | (s16)buf[0x1e];
+		    mtp_events[4].id = (buf[0x1d] >> 4);
+		case 4:
+			mtp_events[3].x = (s16)(buf[0x15] & 0x0F)<<8 | (s16)buf[0x16];
+			mtp_events[3].y = (s16)(buf[0x17] & 0x0F)<<8 | (s16)buf[0x18];
+		 	mtp_events[3].id = (buf[0x17] >> 4);
+		case 3:
+			mtp_events[2].x = (s16)(buf[0x0f] & 0x0F)<<8 | (s16)buf[0x10];
+			mtp_events[2].y = (s16)(buf[0x11] & 0x0F)<<8 | (s16)buf[0x12];
+			mtp_events[2].id = (buf[0x11] >> 4);
+		case 2:
+			mtp_events[1].x = (s16)(buf[0x09] & 0x0F)<<8 | (s16)buf[0x0a];
+			mtp_events[1].y  = (s16)(buf[0x0b] & 0x0F)<<8 | (s16)buf[0x0c];
+			mtp_events[1].id = (buf[0x0b] >> 4);
+		case 1:
+			mtp_events[0].x = (s16)(buf[0x03] & 0x0F)<<8 | (s16)buf[0x04];
+			mtp_events[0].y = (s16)(buf[0x05] & 0x0F)<<8 | (s16)buf[0x06];
+			mtp_events[0].id = (buf[0x05] >> 4);
+			break;
+		default:
+			//printk("%s: invalid touch data, %d\n", __func__, event->touch_point);
+			return -1;
+	}
+
+
+	return 0;
+}
+
+
 static void mtp_work_func(struct work_struct*work)
 {
+	int i;
 	/*
 	 * 读取I2C数据，获取触点数据并上报
 	 *
 	 *
 	 */
-
-
+	mtp_read_data();
 	/* 上报 */
+	
 	/*完全松开时 input_mt_sync(mtp_dev)， input_sync(mtp_dev)*/
-	if(/*没有触点*/) {
+	if (!mtp_points) {
 		input_mt_sync(mtp_dev);
 		input_sync(mtp_dev);
-		return;
+		return 1;
 	}
-	for() {
-		input_report_abs(mtp_dev, ABS_MT_POSITION_X, x);
-		input_report_abs(mtp_dev, ABS_MT_POSITION_Y, y);
-		input_report_abs(mtp_dev, ABS_MT_TRACKING_ID, id);
+
+
+	
+	for(i = 0; i<mtp_points; i++) {
+		input_report_abs(mtp_dev, ABS_MT_POSITION_X, mtp_events[i].x);
+		input_report_abs(mtp_dev, ABS_MT_POSITION_Y, mtp_events[i].y);
+		input_report_abs(mtp_dev, ABS_MT_TRACKING_ID, mtp_events[i].id);
 		input_mt_sync(mtp_dev);
 	}
 	input_sync(mtp_dev);
@@ -65,6 +161,9 @@ static int __devinit mtp_probe(struct i2c_client *client,
 				  const struct i2c_device_id *id)
 {
 	printk("%s %s %d\n", __FILE__, __FUNCTION__, __LINE__);
+
+
+	this_client = client;
 	/* 输入子系统 */
 	/* 分配input_dev */
 	mtp_dev = input_allocate_device();
@@ -111,6 +210,26 @@ static const struct i2c_device_id mtp_id_table[] = {
 	{}
 };
 
+
+static int mtp_ft5x06_valid(struct i2c_client *client)
+{
+	u8 buf[32] = {0};
+	int ret;
+	buf[0] = 0xa3; /*芯片厂家ID*/
+	printk("mtp_ft5x06_valid : addr = 0x%x\n", client->addr);
+	ret = mtp_i2c_rxdata(client, buf, 1);
+	if(ret < 0) {
+		printk("There is not real device, i2c read error\n");
+			return ret;
+	}
+	printk("ID:0x%x\n",buf[0]);
+	if(buf[0] != 0x55 ){
+		printk("There is not real device, value error\n");
+		return -1;
+	}
+
+	return 0;
+}
 static int mtp_detect(struct i2c_client *client,
 		       struct i2c_board_info *info)
 {
@@ -122,8 +241,10 @@ static int mtp_detect(struct i2c_client *client,
 	
 	printk("mtp_detect : addr = 0x%x\n", client->addr);
 
-	/* 进一步判断是哪一款 */
-	
+	/* 进一步判断设备的合法性 */
+	if(mtp_ft5x06_valid(client) < 0)
+		return -1;
+		
 	strlcpy(info->type, "100ask_mtp", I2C_NAME_SIZE);
 	return 0;
 	/**
